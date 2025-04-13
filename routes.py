@@ -101,10 +101,8 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     # Повертаємо токен
     return {"access_token": access_token, "token_type": "bearer"}
 
-# --- Основний роутер програми (перейменовуємо для ясності) ---
-app_router = APIRouter() # Замість router = APIRouter() на початку
-
-
+# --- Основний роутер програми ---
+app_router = APIRouter() 
 
 
 @app_router.post("/programs/", response_model=schemas.TVProgramResponse, status_code=status.HTTP_201_CREATED)
