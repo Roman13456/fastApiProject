@@ -1,0 +1,72 @@
+# --- Environment ---
+# Ignore environment variables file (contains secrets!)
+.env
+
+# Ignore virtual environment directories
+venv/
+env/
+.venv/
+.env/
+
+# --- Python ---
+# Ignore Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.manifest
+*.spec
+
+# --- Databases ---
+# Ignore SQLite database files (like teleprogram.db)
+*.db
+*.sqlite
+*.sqlite3
+# If you use other DBs locally, add their file types (e.g., *.sqlitedb)
+
+# --- IDE / Editor ---
+# Ignore JetBrains IDE files (PyCharm, IntelliJ, etc.)
+.idea/
+
+# Ignore VS Code settings
+.vscode/
+
+# --- Tool Specific (Based on your structure) ---
+# Ignore Repomix directory and output (assuming these are generated/local)
+.repomix/
+repomix-output.txt
+
+# --- Testing ---
+# Ignore pytest cache
+.pytest_cache/
+
+# Ignore coverage reports
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+
+# --- OS Specific ---
+# Ignore macOS finder files
+.DS_Store
+
+# Ignore Windows thumbnail cache
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/
+*.log.*
+
+# --- Temporary files ---
+*.swp
+*~
