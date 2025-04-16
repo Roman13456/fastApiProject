@@ -1,90 +1,133 @@
-from sqlalchemy.orm import Session, joinedload 
+from typing import List, Optional
+from beanie import PydanticObjectId 
 from models import TVProgram, TVChannel, User
-from schemas import TVProgramCreate, TVProgramResponse, TVChannelCreate, TVChannelResponse, UserCreate, UserResponse
-from fastapi import HTTPException
-# Додаємо імпорт функції хешування
-from typing import Optional
+from schemas import TVProgramCreate, UserCreate 
 from security import hash_password
 
+# --- TVProgram CRUD ---
 
-def create_tv_program(db: Session, program: TVProgramCreate) -> TVProgramResponse:
+async def create_tv_program(program_data: TVProgramCreate) -> Optional[TVProgram]:
+    """Створює нову програму в MongoDB."""
     # Перевіряємо, чи існує канал з таким channel_id
-    channel = db.query(TVChannel).filter(TVChannel.id == program.channel_id).first()
+    try:
+        channel_object_id = PydanticObjectId(program_data.channel_id)
+    except Exception: 
+         print(f"Помилка: Невалідний формат channel_id: {program_data.channel_id}")
+         return None 
+
+    channel = await TVChannel.get(channel_object_id) 
     if not channel:
-        raise HTTPException(status_code=404, detail="Канал не знайдений")
+        print(f"Помилка: Канал з ID {program_data.channel_id} не знайдений.")
+        return None # Повертаємо None, якщо канал не знайдено
 
-    db_program = TVProgram(**program.dict())
-    db.add(db_program)
-    db.commit()
-    db.refresh(db_program)
-    return db_program
-
-def get_tv_program(db: Session, program_id: int) -> TVProgramResponse:
-    program = db.query(TVProgram).filter(TVProgram.id == program_id).first()
-    if not program:
-        raise HTTPException(status_code=404, detail="Програма не знайдена")
-    return program
-
-def get_all_tv_programs(db: Session):
-    return db.query(TVProgram).all()
-
-
-def update_tv_program(db: Session, program_id: int, updated_program: TVProgramCreate) -> TVProgramResponse:
-    program = db.query(TVProgram).filter(TVProgram.id == program_id).first()
-    if not program:
-        raise HTTPException(status_code=404, detail="Програма не знайдена")
-
-    for key, value in updated_program.dict().items():
-        setattr(program, key, value)  # Оновлюємо кожне поле
-
-    db.commit()
-    db.refresh(program)
-    return program
-
-
-def delete_tv_program(db: Session, program_id: int):
-    program = db.query(TVProgram).filter(TVProgram.id == program_id).first()
-    if not program:
-        raise HTTPException(status_code=404, detail="Програма не знайдена")
-
-    db.delete(program)
-    db.commit()
-    return {"message": "Програма видалена"}
-
-def get_all_channels(db: Session):
-    """Fetches all TV Channels without their programs."""
-    return db.query(TVChannel).all()
-
-def get_channel_with_programs(db: Session, channel_id: int):
-    """Fetches a single TV Channel by ID, including its associated programs."""
-    # Use joinedload to efficiently load programs in the same query
-    channel = db.query(TVChannel).options(
-        joinedload(TVChannel.programs)
-    ).filter(TVChannel.id == channel_id).first()
-
-    if not channel:
-        raise HTTPException(status_code=404, detail="Канал не знайдений")
-    return channel
-
-
-# --- NEW User CRUD functions ---
-
-def get_user_by_username(db: Session, username: str) -> Optional[User]:
-    """Отримує користувача з БД за ім'ям."""
-    return db.query(User).filter(User.username == username).first()
-
-def create_user(db: Session, user: UserCreate) -> User:
-    """Створює нового користувача в БД."""
-    # Хешуємо пароль перед збереженням
-    hashed_password = hash_password(user.password)
-    # Створюємо об'єкт моделі User, не передаючи оригінальний пароль
-    db_user = User(
-        username=user.username,
-        password_hash=hashed_password,
-        role=user.role or 'user' # Встановлюємо роль (або 'user' за замовчуванням)
+    db_program = TVProgram(
+        title=program_data.title,
+        description=program_data.description,
+        start_time=program_data.start_time,
+        end_time=program_data.end_time,
+        channel=channel, 
     )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+    # Вставляємо документ у базу даних
+    await db_program.insert()
+    return db_program # Повертаємо створений документ
 
+async def get_tv_program(program_id: PydanticObjectId) -> Optional[TVProgram]:
+    """Отримує програму за її ID."""
+    program = await TVProgram.get(program_id)
+    if program and program.channel:
+         await program.fetch_link(TVProgram.channel) # Завантажуємо дані каналу
+    return program
+
+async def get_all_tv_programs() -> List[TVProgram]:
+    """Отримує всі програми."""
+    programs = await TVProgram.find_all().to_list()
+    # Завантажуємо пов'язані канали для кожної програми
+    for program in programs:
+        if program.channel:
+            await program.fetch_link(TVProgram.channel)
+    return programs
+
+async def update_tv_program(program_id: PydanticObjectId, updated_data: TVProgramCreate) -> Optional[TVProgram]:
+    """Оновлює існуючу програму."""
+    program = await TVProgram.get(program_id)
+    if not program:
+        return None # Програма не знайдена
+    
+    if program.channel:
+        await program.fetch_link(TVProgram.channel)
+
+    # Перевіряємо, чи змінився channel_id і чи існує новий канал
+    new_channel_id_str = str(updated_data.channel_id) # Конвертуємо в рядок для порівняння
+    current_channel_id_str = str(program.channel.id) if program.channel else None
+
+    new_channel = program.channel 
+    if new_channel_id_str != current_channel_id_str:
+        try:
+            new_channel_object_id = PydanticObjectId(updated_data.channel_id)
+            new_channel = await TVChannel.get(new_channel_object_id)
+            if not new_channel:
+                print(f"Помилка оновлення: Новий канал з ID {updated_data.channel_id} не знайдений.")
+                return None # Новий канал не знайдено
+        except Exception:
+            print(f"Помилка оновлення: Невалідний формат нового channel_id: {updated_data.channel_id}")
+            return None
+
+    update_dict = updated_data.model_dump(exclude_unset=True)
+
+    # Оновлюємо поля програми
+    program.title = update_dict.get('title', program.title)
+    program.description = update_dict.get('description', program.description)
+    program.start_time = update_dict.get('start_time', program.start_time)
+    program.end_time = update_dict.get('end_time', program.end_time)
+    program.channel = new_channel # Оновлюємо посилання на канал
+    # Зберігаємо зміни
+    await program.save()
+    # Перезавантажуємо посилання на канал після збереження
+    await program.fetch_link(TVProgram.channel)
+    return program
+
+async def delete_tv_program(program_id: PydanticObjectId) -> bool:
+    """Видаляє програму за ID."""
+    program = await TVProgram.get(program_id)
+    if program:
+        await program.delete()
+        return True # Успішно видалено
+    return False # Програма не знайдена
+
+# --- TVChannel CRUD ---
+
+async def get_all_channels() -> List[TVChannel]:
+    """Отримує всі канали (без програм)."""
+    return await TVChannel.find_all().to_list()
+
+async def get_channel_and_programs(channel_id: PydanticObjectId) -> Optional[TVChannel]:
+    """Отримує канал за ID та пов'язані з ним програми."""
+    channel = await TVChannel.get(channel_id)
+    if not channel:
+        return None
+
+    programs = await TVProgram.find(TVProgram.channel.id == channel.id).to_list()
+
+    # Завантажуємо посилання на канал для кожної програми (щоб уникнути помилок при серіалізації)
+    for prog in programs:
+         if prog.channel:
+              await prog.fetch_link(TVProgram.channel)
+
+    return channel, programs
+
+# --- User CRUD ---
+
+async def get_user_by_username(username: str) -> Optional[User]:
+    """Отримує користувача за ім'ям."""
+    return await User.find_one(User.username == username)
+
+async def create_user(user_data: UserCreate) -> User:
+    """Створює нового користувача."""
+    hashed_password = hash_password(user_data.password)
+    db_user = User(
+        username=user_data.username,
+        password_hash=hashed_password,
+        role=user_data.role or 'user'
+    )
+    await db_user.insert()
+    return db_user

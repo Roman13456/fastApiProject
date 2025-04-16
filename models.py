@@ -1,32 +1,38 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
-from sqlalchemy.orm import relationship
-from database import Base
+from datetime import datetime
+from typing import Optional, List
+from beanie import Document, Link, Indexed 
+from pydantic import Field
+from pymongo import IndexModel, ASCENDING
 
-class TVChannel(Base):
-    __tablename__ = "channels"
+# --- Модель Каналу ---
+class TVChannel(Document):
+    name: Indexed(str, unique=True) 
+    country: str
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    country = Column(String)
+    class Settings:
+        name = "channels"
 
-    programs = relationship("TVProgram", back_populates="channel")
+# --- Модель Користувача ---
+class User(Document):
+    username: Indexed(str, unique=True)
+    password_hash: str
+    role: str = Field(default='user')
 
-class TVProgram(Base):
-    __tablename__ = "programs"
+    class Settings:
+        name = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True)
-    description = Column(String)
-    start_time = Column(DateTime)
-    end_time = Column(DateTime)
-    channel_id = Column(Integer, ForeignKey("channels.id"))
+# --- Модель Програми ---
+class TVProgram(Document):
+    title: str 
+    description: str
+    start_time: datetime 
+    end_time: datetime
+    channel: Link[TVChannel]
+    tags: Optional[List[str]] = None
 
-    channel = relationship("TVChannel", back_populates="programs")
-
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    password_hash = Column(String) 
-    role = Column(String, default='user') 
+    class Settings:
+        name = "programs"
+        indexes = [
+            IndexModel([("title", ASCENDING)], name="title_asc_index"),
+            IndexModel([("start_time", ASCENDING)], name="start_time_asc_index"),
+        ]

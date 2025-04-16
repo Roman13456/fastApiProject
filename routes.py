@@ -1,31 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException, status # Додаємо status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm # Додаємо інструменти OAuth2
-from sqlalchemy.orm import Session
-from database import SessionLocal
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import crud
 import schemas
+from models import User, TVProgram, TVChannel 
+from beanie import PydanticObjectId
+import security
+from typing import List
 
-import security 
-from models import User 
-from typing import List 
-
-
+# --- Налаштування OAuth2 ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 # --- Залежність для отримання поточного користувача ---
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User: 
     """
-    Перевіряє токен і повертає поточного користувача з БД.
+    Перевіряє токен і повертає поточного користувача з MongoDB.
     Викликає виняток, якщо токен недійсний або користувач не знайдений.
     """
     credentials_exception = HTTPException(
@@ -33,21 +23,18 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    # Перевіряємо токен і отримуємо username
     username = security.verify_token(token, credentials_exception)
-    if username is None: 
+    if username is None:
          raise credentials_exception
-    # Отримуємо користувача з БД
-    user = crud.get_user_by_username(db, username=username)
+    user = await crud.get_user_by_username(username=username)
     if user is None:
         raise credentials_exception
-    return user 
+    return user
 
-
+# --- Залежність для перевірки адміна ---
 async def get_current_active_admin_user(current_user: User = Depends(get_current_user)) -> User:
     """
     Перевіряє, чи поточний користувач є адміністратором.
-    Використовується для захисту адміністративних ендпоінтів.
     """
     if current_user.role != 'admin':
         raise HTTPException(
@@ -56,114 +43,118 @@ async def get_current_active_admin_user(current_user: User = Depends(get_current
         )
     return current_user
 
-
 # --- Роутер для автентифікації ---
 auth_router = APIRouter(
-    prefix="/auth", 
-    tags=["Authentication"] 
+    prefix="/auth",
+    tags=["Authentication"]
 )
 
 @auth_router.post("/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
-async def register_user(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
-    """
-    Реєструє нового користувача.
-    За замовчуванням створюється з роллю 'user'.
-    """
-    # Перевірка, чи користувач вже існує
-    db_user = crud.get_user_by_username(db, username=user_in.username)
+async def register_user(user_in: schemas.UserCreate): 
+    """Реєструє нового користувача."""
+    db_user = await crud.get_user_by_username(username=user_in.username)
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
         )
-    # Створюємо користувача
-    created_user = crud.create_user(db=db, user=user_in)
-    return created_user # Повертаємо дані створеного користувача (без пароля)
+    # Викликаємо async create_user
+    created_user = await crud.create_user(user_data=user_in)
+    return created_user
 
 @auth_router.post("/token", response_model=schemas.Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """
-    Автентифікує користувача та повертає JWT токен доступу.
-    Використовує стандартний `OAuth2PasswordRequestForm` для отримання username/password.
-    """
-    user = crud.get_user_by_username(db, username=form_data.username)
-    # Перевіряємо, чи існує користувач і чи правильний пароль
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()): 
+    """Автентифікує користувача та повертає JWT токен."""
+    user = await crud.get_user_by_username(username=form_data.username)
     if not user or not security.verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    # Створюємо токен доступу
-    access_token = security.create_access_token(
-        data={"sub": user.username} # 'sub' - стандартне поле для ідентифікатора користувача в JWT
-    )
-    # Повертаємо токен
+    access_token = security.create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
 # --- Основний роутер програми ---
-app_router = APIRouter() 
+app_router = APIRouter()
 
+# --- Program Routes ---
 
 @app_router.post("/programs/", response_model=schemas.TVProgramResponse, status_code=status.HTTP_201_CREATED)
-def create_program(
+async def create_program_endpoint( 
     program: schemas.TVProgramCreate,
-    db: Session = Depends(get_db),
     current_admin: User = Depends(get_current_active_admin_user)
 ):
-    return crud.create_tv_program(db, program)
+    """Створює нову телепрограму (тільки для адмінів)."""
+    created_program = await crud.create_tv_program(program_data=program)
+    if created_program is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Channel with id {program.channel_id} not found"
+        )
+    await created_program.fetch_link(TVProgram.channel)
+    return created_program
+
+@app_router.get("/programs/", response_model=List[schemas.TVProgramResponse])
+async def get_all_programs_endpoint(): 
+    """Отримує список всіх телепрограм."""
+    return await crud.get_all_tv_programs()
+
+@app_router.get("/programs/{program_id}", response_model=schemas.TVProgramResponse)
+async def get_program_endpoint(program_id: PydanticObjectId): 
+    """Отримує конкретну телепрограму за її ID."""
+    program = await crud.get_tv_program(program_id=program_id)
+    if program is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Program not found")
+    return program
 
 @app_router.put("/programs/{program_id}", response_model=schemas.TVProgramResponse)
-def update_program(
-    program_id: int,
-    updated_program: schemas.TVProgramCreate,
-    db: Session = Depends(get_db),
+async def update_program_endpoint(
+    program_id: PydanticObjectId, 
+    updated_program_data: schemas.TVProgramCreate,
     current_admin: User = Depends(get_current_active_admin_user)
 ):
-    return crud.update_tv_program(db, program_id, updated_program)
+    """Оновлює телепрограму за ID (тільки для адмінів)."""
+    updated_program = await crud.update_tv_program(
+        program_id=program_id,
+        updated_data=updated_program_data
+    )
+    if updated_program is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Program or associated new Channel not found")
+    return updated_program
 
 @app_router.delete("/programs/{program_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_program(
-    program_id: int,
-    db: Session = Depends(get_db),
+async def delete_program_endpoint(
+    program_id: PydanticObjectId, 
     current_admin: User = Depends(get_current_active_admin_user)
 ):
-     result = crud.delete_tv_program(db, program_id)
-     return None 
+    """Видаляє телепрограму за ID (тільки для адмінів)."""
+    deleted = await crud.delete_tv_program(program_id=program_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Program not found")
+    return None
 
+# --- Channel Routes ---
 
-# --- Публічні ендпоінти ---
+@app_router.get("/channels/", response_model=List[schemas.TVChannelBasicResponse])
+async def read_channels_endpoint(): 
+    """Отримує список всіх телеканалів (базова інформація)."""
+    return await crud.get_all_channels()
 
-@app_router.get("/programs/", response_model=list[schemas.TVProgramResponse])
-def get_all_programs(db: Session = Depends(get_db)):
-    return crud.get_all_tv_programs(db)
-@app_router.get("/programs/{program_id}", response_model=schemas.TVProgramResponse)
-def get_program(program_id: int, db: Session = Depends(get_db)):
-    return crud.get_tv_program(db, program_id)
+@app_router.get("/channels/{channel_id}", response_model=schemas.TVChannelResponse)
+async def read_channel_with_programs_endpoint(channel_id: PydanticObjectId): 
+    """Отримує канал за ID разом з його програмами."""
+    result  = await crud.get_channel_and_programs(channel_id=channel_id)
+    if result  is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
+    channel, programs = result
+    channel_data = channel.model_dump() 
+    channel_data["programs"] = programs 
+    return channel_data
 
+# --- User Routes ---
 
-@app_router.get("/channels/", response_model=List[schemas.TVChannelBasicResponse]) 
-def read_channels(db: Session = Depends(get_db)):
-    """
-    Get a list of all TV channels (basic info only).
-    """
-    channels = crud.get_all_channels(db)
-    return channels 
-
-@app_router.get("/channels/{channel_id}", response_model=schemas.TVChannelResponse) 
-def read_channel_with_programs(channel_id: int, db: Session = Depends(get_db)):
-    """
-    Get a specific TV channel by its ID, including all its associated programs.
-    """
-    channel = crud.get_channel_with_programs(db, channel_id=channel_id)
-    return channel
-
-
-
-# Додамо ендпоінт для перевірки поточного користувача
 @app_router.get("/users/me", response_model=schemas.UserResponse)
 async def read_users_me(current_user: User = Depends(get_current_user)):
-    """
-    Повертає дані поточного автентифікованого користувача.
-    """
+    """Повертає дані поточного автентифікованого користувача."""
     return current_user
