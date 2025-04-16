@@ -1,3 +1,3 @@
-front-end ui: https://github.com/Roman13456/tv-program-ui
+Lab3
 
-each lab has its own branch
+front-end ui: https://github.com/Roman13456/tv-program-ui
